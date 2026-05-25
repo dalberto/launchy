@@ -18,7 +18,7 @@ from xml.parsers.expat import ExpatError
 
 from . import diagnostics, launchctl, paths, plist, status
 from .diagnostics import Diagnostic
-from .exceptions import JobNotFound, NotInstalled, PermissionDeniedError
+from .exceptions import JobNotFound, LaunchctlError, NotInstalled, PermissionDeniedError
 from .paths import Scope
 from .plist import CalendarSpec, KeepAliveConditions
 from .status import JobStatus
@@ -135,9 +135,18 @@ class Job:
         launchctl.kickstart(self._service_target, kill_existing=True)
 
     def stop(self) -> None:
-        """Send SIGTERM to the running job."""
+        """Send SIGTERM to the running job. No-op if already stopped."""
         self._require_installed()
-        launchctl.kill(self._service_target, "SIGTERM")
+        if self.status().pid is None:
+            return
+        try:
+            launchctl.kill(self._service_target, "SIGTERM")
+        except LaunchctlError as exc:
+            # Race: status() saw a pid but the process exited before we sent
+            # the signal. launchctl returns "No process to signal" (exit 3).
+            if "No process to signal" in exc.stderr:
+                return
+            raise
 
     def reload(self) -> None:
         """Bootout + bootstrap. Use after editing the plist on disk."""
@@ -160,10 +169,17 @@ class Job:
         launchctl.bootout(self._service_target)
 
     def enable(self) -> None:
-        """Remove the disabled flag and bootstrap the job."""
+        """Remove the disabled flag and bootstrap the job. Idempotent.
+
+        Mirrors `install()`'s pattern: if the job is already loaded, bootout
+        first so a second `enable()` call doesn't trip `bootstrap`'s
+        "already-loaded" failure.
+        """
         self._check_root()
         self._require_installed()
         launchctl.enable(self._service_target)
+        if launchctl.print_service(self._service_target).returncode == 0:
+            launchctl.bootout(self._service_target)
         launchctl.bootstrap(self._domain, self.plist_path)
 
     def status(self) -> JobStatus:

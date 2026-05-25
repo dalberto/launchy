@@ -228,29 +228,75 @@ launchy rm --grep test --force      # bulk
 
 ## Shell completion
 
-`launchy --install-completion` writes a completion script for your shell. Tab-completes installed labels across all scopes.
+`launchy --install-completion` writes a completion script for your shell. Tab-completes installed labels across all scopes using fzf-style fuzzy matching — characters in order, not contiguous, ranked by word-boundary hits and position. So `launchy info ferry<TAB>` finds `dev.ascention.mcp-ferry`, and `launchy rm espa<TAB>` finds `com.federicoterzi.espanso`.
+
+Shell behaviour varies: fish shows all returned candidates; zsh and bash may filter to prefix-only depending on your config (`fzf-tab` in zsh restores the full fuzzy experience).
 
 ## Reference
 
 ### Triggers
 
-| launchd key             | Python type                          | Example                          |
-|-------------------------|--------------------------------------|----------------------------------|
-| `RunAtLoad`             | `bool`                               | `run_at_load=True`               |
-| `StartOnMount`          | `bool`                               | `start_on_mount=True`            |
-| `StartInterval`         | `datetime.timedelta`                 | `interval=timedelta(minutes=5)`  |
-| `StartCalendarInterval` | `CalendarSpec \| list[CalendarSpec]` | `calendar={"hour": 2}`           |
-| `WatchPaths`            | `list[Path]`                         | `watch_paths=[Path("~/Drop")]`   |
-| `QueueDirectories`      | `list[Path]`                         | `queue_directories=[...]`        |
-| `KeepAlive`             | `bool \| KeepAliveConditions`        | `keep_alive=True`                |
+| launchd key             | Python type                          | CLI shorthand   |
+|-------------------------|--------------------------------------|-----------------|
+| `RunAtLoad`             | `bool`                               | `--run-at-load` |
+| `KeepAlive`             | `bool \| KeepAliveConditions`        | `--keep-alive`  |
+| `StartInterval`         | `datetime.timedelta`                 | `--every 5m`    |
+| `StartCalendarInterval` | `CalendarSpec \| list[CalendarSpec]` | `--at "02:00"`  |
+| `WatchPaths`            | `list[Path]`                         | `--watch PATH`  |
+| `QueueDirectories`      | `list[Path]`                         | `--queue-dir P` |
+| `StartOnMount`          | `bool`                               | `--start-on-mount` |
 
 `CalendarSpec` and `KeepAliveConditions` are `TypedDict`s with snake_case keys (`hour`, `minute`, `weekday`, `successful_exit`, etc). launchy maps them to launchd's PascalCase at render time.
 
-CLI shorthand for the common cases:
+For the authoritative spec, see `man 5 launchd.plist` ([online mirror](https://www.manpagez.com/man/5/launchd.plist/)) and Apple's [Creating Launch Daemons and Agents](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html).
 
-- `--every 5m` / `1h` / `30s` / `2d` → `StartInterval`
-- `--at "02:00"` / `--at "Mon 09:00"` → `StartCalendarInterval`
-- `--run-at-load`, `--start-on-mount`, `--keep-alive`, `--watch PATH`, `--queue-dir PATH`
+#### When to use which
+
+**`RunAtLoad`** — fires once when launchd loads the plist: at login for user agents, at boot for daemons. Best for "start this service on login" patterns; combine with `KeepAlive` for long-running services that should also survive crashes.
+
+**`KeepAlive`** — restart the program when it exits. The bool form `True` always restarts. The dict form gates restart on conditions:
+
+- `successful_exit: False` — restart on crash but not on clean exit. The standard pattern for "service that runs until I explicitly stop it."
+- `crashed: True` — restart only after abnormal exit (signal/crash).
+- `network_state: True` — restart while network is reachable. *Deprecated on modern macOS; treat as a no-op.*
+- `path_state: {"/path": True}` — restart while a path exists (or doesn't).
+- `other_job_enabled: {"com.x.label": True}` — restart depending on another job's enabled state.
+
+Conditions aren't mutually exclusive. If you set more than one, launchd **ORs** them — the job restarts if any condition says it should. In practice you almost always pick one, usually `{"successful_exit": False}`.
+
+**`StartInterval`** (`--every 5m`) — run every N seconds. Counts from load time, not wall clock — "every hour" doesn't necessarily land on `:00`. Best for polling and periodic syncs where exact timing doesn't matter. Avoid intervals under 10 seconds (`launchy doctor` warns).
+
+The `--every` shorthand accepts a positive integer followed by `s` (seconds), `m` (minutes), `h` (hours), or `d` (days): `30s`, `5m`, `1h`, `2d`. Compound expressions like `1h30m` aren't supported — use `--interval SECONDS` for arbitrary values.
+
+**`StartCalendarInterval`** (`--at "02:00"`) — cron-like fire times. Each `CalendarSpec` is a dict with any of: `minute` (0–59), `hour` (0–23), `day` (1–31, day of month), `weekday` (0–7, where 0 and 7 are both Sunday), `month` (1–12). **Omitted keys are wildcards.** Pass a list of dicts for multiple fire times in one job. Missed runs while the Mac was asleep fire **once** on wake, not retroactively.
+
+```python
+# every day at 2:00 AM
+calendar={"hour": 2, "minute": 0}
+
+# every Monday at 9:00 AM
+calendar={"weekday": 1, "hour": 9, "minute": 0}
+
+# 1st of every month at noon
+calendar={"day": 1, "hour": 12}
+
+# every July 4th at midnight
+calendar={"month": 7, "day": 4, "hour": 0, "minute": 0}
+
+# twice a day: 9 AM and 5 PM
+calendar=[{"hour": 9, "minute": 0}, {"hour": 17, "minute": 0}]
+
+# every weekday morning (one entry per day; weekday 1=Mon, 5=Fri)
+calendar=[{"weekday": d, "hour": 9} for d in range(1, 6)]
+```
+
+The CLI shorthand `--at` covers daily and weekly cases (`--at "02:00"`, `--at "Mon 09:00"`); for day-of-month or month constraints, fall back to `--calendar "day=1,hour=12"`.
+
+**`WatchPaths`** (`--watch PATH`) — fire when any of the listed paths is modified. Triggers on metadata changes too (atime/mtime), so expect occasional spurious fires; debounce in your program if needed. Best for reacting to config edits or file drops.
+
+**`QueueDirectories`** (`--queue-dir PATH`) — like `WatchPaths` but only fires when the directory is **non-empty**, and keeps firing until your program drains it. Best for ingest queues, mail spools, or any "process incoming files" pattern.
+
+**`StartOnMount`** (`--start-on-mount`) — fire whenever any filesystem mounts. Best for automated actions on external drives (back up to USB on plug-in, sync after a network share comes online). Rare in practice.
 
 ### Scopes
 

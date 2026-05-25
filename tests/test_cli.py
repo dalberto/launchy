@@ -404,6 +404,77 @@ def test_doctor_verbose_shows_passing_checks(runner: CliRunner, fake_home: Path)
     assert "program" in result.output
 
 
+# ---- completion: fuzzy matching --------------------------------------------
+
+
+def test_fuzzy_score_subsequence_required() -> None:
+    from launchy.cli import _fuzzy_score
+
+    # No subsequence → None
+    assert _fuzzy_score("xyz", "com.launchy.backup") is None
+    # Subsequence (in order) → some score
+    assert _fuzzy_score("clb", "com.launchy.backup") is not None
+    # Out-of-order chars don't match
+    assert _fuzzy_score("bal", "com.launchy.backup") is None  # 'l' after 'a'
+
+
+def test_fuzzy_score_prefix_beats_midword() -> None:
+    """Same query, different positions — prefix match wins."""
+    from launchy.cli import _fuzzy_score
+
+    prefix = _fuzzy_score("com", "com.launchy.backup")  # 'com' at index 0
+    mid = _fuzzy_score("com", "user.dotcom.app")  # 'com' at index 8
+    assert prefix is not None and mid is not None
+    assert prefix > mid
+
+
+def test_fuzzy_score_word_boundary_beats_random() -> None:
+    from launchy.cli import _fuzzy_score
+
+    boundary = _fuzzy_score("b", "com.launchy.backup")  # matches the 'b' after '.'
+    midword = _fuzzy_score("a", "com.launchy.backup")  # matches 'a' in 'launchy'
+    assert boundary is not None and midword is not None
+    assert boundary > midword
+
+
+def test_fuzzy_score_shorter_wins_on_tie() -> None:
+    from launchy.cli import _fuzzy_score
+
+    short = _fuzzy_score("com", "com.x")
+    long = _fuzzy_score("com", "com.something.very.long")
+    assert short is not None and long is not None
+    assert short > long
+
+
+def test_fuzzy_score_empty_query_matches_anything() -> None:
+    from launchy.cli import _fuzzy_score
+
+    assert _fuzzy_score("", "com.launchy.x") == 0.0
+
+
+def test_complete_label_ranks_matches(fake_home: Path) -> None:
+    """Real glob: install several jobs, query partial label, check ordering."""
+    from launchy.cli import _complete_label
+
+    for label in ("com.launchy.backup", "com.launchy.bench", "com.other.thing"):
+        _install_pair(runner_fixture := CliRunner(), label)  # noqa: F841
+
+    # "bac" should hit "backup" (substring) but not "bench" or "thing"
+    results = _complete_label("bac")
+    assert "com.launchy.backup" in results
+    assert "com.launchy.bench" not in results
+    assert "com.other.thing" not in results
+
+
+def test_complete_label_empty_query_returns_all(fake_home: Path) -> None:
+    from launchy.cli import _complete_label
+
+    for label in ("com.launchy.a", "com.launchy.b"):
+        _install_pair(CliRunner(), label)
+    results = _complete_label("")
+    assert {"com.launchy.a", "com.launchy.b"} <= set(results)
+
+
 # ---- disable / enable ------------------------------------------------------
 
 
@@ -426,14 +497,16 @@ def test_enable_calls_launchctl_enable_then_bootstrap(
     runner: CliRunner, fake_home: Path
 ) -> None:
     _install_pair(runner, "com.launchy.en")
+    # enable → 0, print → 1 (not loaded), bootstrap → 0. (enable is idempotent:
+    # if already loaded, it bootouts first; this test covers the not-loaded path.)
     with patch(
         "launchy.launchctl.subprocess.run",
-        side_effect=[_completed(0), _completed(0)],
+        side_effect=[_completed(0), _completed(1), _completed(0)],
     ) as run:
         result = runner.invoke(app, ["enable", "com.launchy.en", "--force"])
     assert result.exit_code == 0, result.output
     verbs = [c.args[0][1] for c in run.call_args_list]
-    assert verbs == ["enable", "bootstrap"]
+    assert verbs == ["enable", "print", "bootstrap"]
     assert "enabled" in result.output
 
 

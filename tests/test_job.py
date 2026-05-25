@@ -298,16 +298,19 @@ def test_disable_runs_launchctl_disable_then_bootout(fake_home: Path) -> None:
 
 
 def test_enable_runs_launchctl_enable_then_bootstrap(fake_home: Path) -> None:
+    """First-time enable on a not-loaded job: enable → check load → bootstrap."""
     job = Job(label="com.launchy.en", program=["/bin/true"])
     job.plist_path.parent.mkdir(parents=True, exist_ok=True)
     job.plist_path.write_text(job.render(), encoding="utf-8")
 
+    # enable → 0, print → 1 (not loaded), bootstrap → 0
     with patch(
-        "launchy.launchctl.subprocess.run", side_effect=[_completed(0), _completed(0)]
+        "launchy.launchctl.subprocess.run",
+        side_effect=[_completed(0), _completed(1), _completed(0)],
     ) as run:
         job.enable()
     verbs = [c.args[0][1] for c in run.call_args_list]
-    assert verbs == ["enable", "bootstrap"]
+    assert verbs == ["enable", "print", "bootstrap"]
 
 
 def test_disable_requires_installed_plist(fake_home: Path) -> None:
@@ -343,3 +346,50 @@ def test_diagnose_surfaces_missing_program(fake_home: Path) -> None:
         results = job.diagnose()
     fails = [d for d in results if d.severity == "fail"]
     assert any(d.check == "program" for d in fails)
+
+
+# ---- idempotency --------------------------------------------------------------
+
+
+def test_stop_is_noop_when_already_stopped(fake_home: Path) -> None:
+    """status returns no pid → stop should not invoke launchctl kill."""
+    job = Job(label="com.launchy.stop1", program=["/bin/true"])
+    job.plist_path.parent.mkdir(parents=True, exist_ok=True)
+    job.plist_path.write_text(job.render(), encoding="utf-8")
+    # print returns "no pid" (loaded but not running)
+    with patch(
+        "launchy.launchctl.subprocess.run",
+        return_value=_completed(0, "state = not running\n"),
+    ) as run:
+        job.stop()
+    verbs = [c.args[0][1] for c in run.call_args_list]
+    assert verbs == ["print"]  # no `kill` was attempted
+
+
+def test_stop_swallows_race_no_process_to_signal(fake_home: Path) -> None:
+    """If process exits between status() and kill, treat as already-stopped."""
+    job = Job(label="com.launchy.stop2", program=["/bin/true"])
+    job.plist_path.parent.mkdir(parents=True, exist_ok=True)
+    job.plist_path.write_text(job.render(), encoding="utf-8")
+    # First call: print → has pid; second call: kill → exit 3 "No process to signal"
+    print_resp = _completed(0, "pid = 999\n")
+    kill_fail = subprocess.CompletedProcess(
+        args=[], returncode=3, stdout="", stderr="No process to signal."
+    )
+    with patch("launchy.launchctl.subprocess.run", side_effect=[print_resp, kill_fail]):
+        job.stop()  # must not raise
+
+
+def test_enable_is_idempotent(fake_home: Path) -> None:
+    """A second enable() must not fail with bootstrap's already-loaded error."""
+    job = Job(label="com.launchy.en2", program=["/bin/true"])
+    job.plist_path.parent.mkdir(parents=True, exist_ok=True)
+    job.plist_path.write_text(job.render(), encoding="utf-8")
+    # enable → 0, print (loaded) → 0, bootout → 0, bootstrap → 0
+    with patch(
+        "launchy.launchctl.subprocess.run",
+        side_effect=[_completed(0), _completed(0, "loaded"), _completed(0), _completed(0)],
+    ) as run:
+        job.enable()
+    verbs = [c.args[0][1] for c in run.call_args_list]
+    assert verbs == ["enable", "print", "bootout", "bootstrap"]

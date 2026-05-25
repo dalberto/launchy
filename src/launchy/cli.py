@@ -55,14 +55,44 @@ EXIT_LAUNCHCTL_ERROR = 2
 # ---- typer Option aliases (module-level so pyright can resolve them) --------
 
 
-def _complete_label(incomplete: str) -> list[str]:
-    """Tab-complete labels of installed jobs across all scopes.
+def _fuzzy_score(query: str, candidate: str) -> float | None:
+    """fzf-style subsequence match. Returns None if `query` isn't a
+    subsequence of `candidate` (case-insensitive). Higher score = better.
 
-    Just globs filenames — doesn't parse plists — so it stays under the few-ms
-    budget shell completion expects. Dedupes labels that appear in multiple
-    scopes (rare).
+    Scoring favours: early position, contiguous runs, word boundaries
+    (after `.`/`_`/`-` or at index 0), and shorter candidates on ties.
     """
-    out: list[str] = []
+    if not query:
+        return 0.0
+    q = query.lower()
+    c = candidate.lower()
+    positions: list[int] = []
+    cursor = 0
+    for qc in q:
+        idx = c.find(qc, cursor)
+        if idx == -1:
+            return None
+        positions.append(idx)
+        cursor = idx + 1
+
+    score = -positions[0] * 2.0  # earlier first match wins
+    for i, p in enumerate(positions):
+        if i > 0 and p == positions[i - 1] + 1:
+            score += 15  # consecutive match
+        if p == 0 or candidate[p - 1] in "._-":
+            score += 25  # word boundary (heavily favoured — fzf-style)
+    score -= len(candidate) * 0.1  # shorter is better on ties
+    return score
+
+
+def _complete_label(incomplete: str) -> list[str]:
+    """Tab-complete labels with fzf-style fuzzy matching, ranked.
+
+    Globs filenames — doesn't parse plists — so it stays under the few-ms
+    budget shell completion expects. Dedupes labels appearing in multiple
+    scopes; returns highest-scoring candidates first.
+    """
+    candidates: list[tuple[float, str]] = []
     seen: set[str] = set()
     for scope in Scope:
         try:
@@ -70,12 +100,16 @@ def _complete_label(incomplete: str) -> list[str]:
             if not directory.is_dir():
                 continue
             for p in directory.glob("*.plist"):
-                if p.stem.startswith(incomplete) and p.stem not in seen:
-                    out.append(p.stem)
-                    seen.add(p.stem)
+                if p.stem in seen:
+                    continue
+                seen.add(p.stem)
+                score = _fuzzy_score(incomplete, p.stem)
+                if score is not None:
+                    candidates.append((score, p.stem))
         except OSError:
             continue
-    return out
+    candidates.sort(key=lambda sc: (-sc[0], sc[1]))
+    return [label for _s, label in candidates]
 
 
 LabelArg = Annotated[str, typer.Argument(help="launchd job label (reverse-DNS).")]
@@ -126,13 +160,14 @@ StartOnMountOpt = Annotated[
     bool, typer.Option("--start-on-mount", help="Fire when a filesystem mounts.")
 ]
 IntervalOpt = Annotated[
-    int | None, typer.Option("--interval", help="Repeat every N seconds (StartInterval).")
+    int | None,
+    typer.Option("--interval", help="Repeat every N seconds (StartInterval). Single value."),
 ]
 EveryOpt = Annotated[
     str | None,
     typer.Option(
         "--every",
-        help="Shorthand for --interval. e.g. 5m, 1h, 30s, 2d.",
+        help="Shorthand for --interval. Single value. Units: s/m/h/d. e.g. 30s, 5m, 1h, 2d.",
     ),
 ]
 CalendarOpt = Annotated[
