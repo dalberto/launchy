@@ -1,0 +1,76 @@
+[project]
+name = "launchy"
+dynamic = ["version"]
+description = "Pythonic wrapper for macOS launchd: plist generation + launchctl lifecycle, as a library and a CLI."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Darlin Alberto" }]
+keywords = ["launchd", "launchctl", "macos", "launchagent", "launchdaemon", "scheduling", "plist"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: System :: Boot",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/dalberto/launchy"
+Repository = "https://github.com/dalberto/launchy"
+Issues = "https://github.com/dalberto/launchy/issues"
+Changelog = "https://github.com/dalberto/launchy/blob/main/CHANGELOG.md"
+
+[project.scripts]
+launchy = "launchy.cli:app"
+
+[project.optional-dependencies]
+cli = [
+    "typer>=0.15",
+    "rich>=13.9",
+    # click 8.4 broke typer's type stubs for pyright (typer.Option flagged
+    # as partially unknown). Hold to 8.3.x until typer or pyright catches up.
+    "click>=8.1,<8.4",
+]
+dev = [
+    "launchy[cli]",
+    "pytest>=8.3",
+    "ruff>=0.9",
+    "pyright>=1.1",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/launchy/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/launchy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+include = ["src", "tests"]
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
