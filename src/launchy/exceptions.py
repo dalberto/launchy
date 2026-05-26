@@ -31,3 +31,14 @@ class LaunchctlError(LaunchyError):
         if stderr.strip():
             msg = f"{msg}\n{stderr.strip()}"
         super().__init__(msg)
+
+
+class TeardownTimeoutError(LaunchyError):
+    """`bootout_and_wait` couldn't confirm the child PID exited in time.
+
+    Distinct from `LaunchctlError`: launchctl itself succeeded, but the
+    child process is still running past the deadline. Subsequent
+    `bootstrap` would race with launchd's stale registration. Caller can
+    retry (often the child just needs more time) or surface as a stuck
+    teardown that needs human investigation.
+    """

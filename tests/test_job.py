@@ -393,3 +393,70 @@ def test_enable_is_idempotent(fake_home: Path) -> None:
         job.enable()
     verbs = [c.args[0][1] for c in run.call_args_list]
     assert verbs == ["enable", "print", "bootout", "bootstrap"]
+
+
+# ---- bootout/bootstrap race fix (lock in that lifecycle calls bootout_and_wait) -
+
+
+def test_install_uses_bootout_and_wait_when_loaded(fake_home: Path) -> None:
+    """Regression guard: install() must route through bootout_and_wait, not
+    plain bootout, so the loaded child's PID is awaited before bootstrap."""
+    job = Job(label="com.launchy.race1", program=["/bin/true"])
+    with (
+        patch("launchy.launchctl.print_service") as print_svc,
+        patch("launchy.launchctl.bootout_and_wait") as baw,
+        patch("launchy.launchctl.bootstrap") as bs,
+    ):
+        print_svc.return_value = _completed(0, "pid = 4242\n")
+        job.install()
+    baw.assert_called_once()
+    assert baw.call_args.args[0] == f"gui/{os.getuid()}/com.launchy.race1"
+    assert baw.call_args.args[1] == 4242  # PID parsed from print output
+    bs.assert_called_once()
+
+
+def test_reload_uses_bootout_and_wait(fake_home: Path) -> None:
+    """Same regression guard for reload()."""
+    job = Job(label="com.launchy.race2", program=["/bin/true"])
+    job.plist_path.parent.mkdir(parents=True, exist_ok=True)
+    job.plist_path.write_text(job.render(), encoding="utf-8")
+    with (
+        patch("launchy.launchctl.print_service") as print_svc,
+        patch("launchy.launchctl.bootout_and_wait") as baw,
+        patch("launchy.launchctl.bootstrap"),
+    ):
+        print_svc.return_value = _completed(0, "pid = 5555\n")
+        job.reload()
+    baw.assert_called_once()
+    assert baw.call_args.args[1] == 5555
+
+
+def test_enable_uses_bootout_and_wait_when_loaded(fake_home: Path) -> None:
+    """Same regression guard for enable()."""
+    job = Job(label="com.launchy.race3", program=["/bin/true"])
+    job.plist_path.parent.mkdir(parents=True, exist_ok=True)
+    job.plist_path.write_text(job.render(), encoding="utf-8")
+    with (
+        patch("launchy.launchctl.enable") as en,
+        patch("launchy.launchctl.print_service") as print_svc,
+        patch("launchy.launchctl.bootout_and_wait") as baw,
+        patch("launchy.launchctl.bootstrap"),
+    ):
+        print_svc.return_value = _completed(0, "pid = 7777\n")
+        job.enable()
+    en.assert_called_once()
+    baw.assert_called_once()
+    assert baw.call_args.args[1] == 7777
+
+
+def test_install_timeout_kwarg_propagates_to_bootout_and_wait(fake_home: Path) -> None:
+    """`Job.install(timeout=...)` must pass timeout through to the helper."""
+    job = Job(label="com.launchy.race4", program=["/bin/true"])
+    with (
+        patch("launchy.launchctl.print_service") as print_svc,
+        patch("launchy.launchctl.bootout_and_wait") as baw,
+        patch("launchy.launchctl.bootstrap"),
+    ):
+        print_svc.return_value = _completed(0, "pid = 9999\n")
+        job.install(timeout=5.0)
+    assert baw.call_args.kwargs.get("timeout") == 5.0

@@ -3,6 +3,30 @@
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.1.1]
+
+### Fixed
+
+- `Job.install()`, `Job.reload()`, and `Job.enable()` no longer race-fail
+  with `Bootstrap failed: 5: Input/output error` when the loaded service's
+  child traps SIGTERM and takes time to exit. `launchctl bootout` dispatches
+  SIGTERM and returns immediately; `launchctl print` reports the service
+  gone before the child actually exits; the follow-up `bootstrap` then
+  collides with launchd's still-live registration. The fix captures the
+  loaded child's PID before bootout and polls `os.kill(pid, 0)` until it
+  exits before bootstrapping. Deterministic 10/10 failures with a slow-quit
+  child are now 0/10.
+
+### Added
+
+- `launchctl.bootout_and_wait(target, pid, timeout=30.0)` — public helper
+  encapsulating the race fix.
+- `TeardownTimeoutError(LaunchyError)` — raised when the child outlives the
+  deadline (distinct from `LaunchctlError`, which signals launchctl itself
+  failed). Exported from `launchy`.
+- `timeout` kwarg on `Job.install()`, `Job.reload()`, `Job.enable()`
+  (default 30s) for callers with long graceful shutdowns.
+
 ## [0.1.0]
 
 Initial release.
@@ -39,4 +63,5 @@ Initial release.
 - **Exceptions**: `LaunchyError` hierarchy — `JobNotFound`, `NotInstalled`,
   `PermissionDeniedError`, `LaunchctlError` (carries returncode, stderr, argv).
 
+[0.1.1]: https://github.com/dalberto/launchy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/dalberto/launchy/releases/tag/v0.1.0

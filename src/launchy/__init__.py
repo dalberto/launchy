@@ -11,6 +11,7 @@ from .exceptions import (
     LaunchyError,
     NotInstalled,
     PermissionDeniedError,
+    TeardownTimeoutError,
 )
 from .job import Job
 from .paths import Scope
@@ -35,5 +36,6 @@ __all__ = [
     "PermissionDeniedError",
     "Scope",
     "Severity",
+    "TeardownTimeoutError",
     "__version__",
 ]

@@ -105,11 +105,14 @@ class Job:
 
     # ---- lifecycle -----------------------------------------------------------
 
-    def install(self) -> Path:
+    def install(self, *, timeout: float = 30.0) -> Path:
         """Write the plist and bootstrap into launchd.
 
         Idempotent: if the service is already loaded, bootout first so launchd
-        picks up any changes.
+        picks up any changes. After bootout, waits up to `timeout` seconds
+        for the previously-loaded child PID to actually exit before
+        bootstrapping — otherwise the bootstrap races with launchd's still-
+        live registration and fails with EIO 5 on slow-quit children.
         """
         self._check_root()
         if self.log_dir is not None:
@@ -117,9 +120,11 @@ class Job:
         self.plist_path.parent.mkdir(parents=True, exist_ok=True)
         self.plist_path.write_text(self.render(), encoding="utf-8")
 
-        # Idempotent bootstrap: if loaded, unload first.
-        if launchctl.print_service(self._service_target).returncode == 0:
-            launchctl.bootout(self._service_target)
+        # Idempotent bootstrap: if loaded, unload and wait for child exit.
+        print_result = launchctl.print_service(self._service_target)
+        if print_result.returncode == 0:
+            pid = status.parse(self.label, 0, print_result.stdout).pid
+            launchctl.bootout_and_wait(self._service_target, pid, timeout=timeout)
         launchctl.bootstrap(self._domain, self.plist_path)
         return self.plist_path
 
@@ -148,12 +153,23 @@ class Job:
                 return
             raise
 
-    def reload(self) -> None:
-        """Bootout + bootstrap. Use after editing the plist on disk."""
+    def reload(self, *, timeout: float = 30.0) -> None:
+        """Bootout + bootstrap. Use after editing the plist on disk.
+
+        Waits up to `timeout` seconds for the previously-loaded child PID
+        to exit before re-bootstrapping (see `install` for the race this
+        avoids).
+        """
         self._check_root()
         if not self.plist_path.exists():
             raise NotInstalled(f"plist not on disk: {self.plist_path}")
-        launchctl.bootout(self._service_target)
+        print_result = launchctl.print_service(self._service_target)
+        pid = (
+            status.parse(self.label, 0, print_result.stdout).pid
+            if print_result.returncode == 0
+            else None
+        )
+        launchctl.bootout_and_wait(self._service_target, pid, timeout=timeout)
         launchctl.bootstrap(self._domain, self.plist_path)
 
     def disable(self) -> None:
@@ -168,18 +184,21 @@ class Job:
         launchctl.disable(self._service_target)
         launchctl.bootout(self._service_target)
 
-    def enable(self) -> None:
+    def enable(self, *, timeout: float = 30.0) -> None:
         """Remove the disabled flag and bootstrap the job. Idempotent.
 
         Mirrors `install()`'s pattern: if the job is already loaded, bootout
-        first so a second `enable()` call doesn't trip `bootstrap`'s
-        "already-loaded" failure.
+        first (waiting up to `timeout` for the child PID to actually exit)
+        so a second `enable()` call doesn't trip `bootstrap`'s
+        "already-loaded" failure or race on a slow-quit child.
         """
         self._check_root()
         self._require_installed()
         launchctl.enable(self._service_target)
-        if launchctl.print_service(self._service_target).returncode == 0:
-            launchctl.bootout(self._service_target)
+        print_result = launchctl.print_service(self._service_target)
+        if print_result.returncode == 0:
+            pid = status.parse(self.label, 0, print_result.stdout).pid
+            launchctl.bootout_and_wait(self._service_target, pid, timeout=timeout)
         launchctl.bootstrap(self._domain, self.plist_path)
 
     def status(self) -> JobStatus:
