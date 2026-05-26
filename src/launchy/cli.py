@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated
 
 import click
+import click.shell_completion
 import typer
 import typer.core
 from rich.console import Console
@@ -112,18 +113,56 @@ def _complete_label(incomplete: str) -> list[str]:
     return [label for _s, label in candidates]
 
 
+def _shell_complete_label(
+    _ctx: click.Context, _param: click.Parameter, incomplete: str
+) -> list[click.shell_completion.CompletionItem]:
+    """click-style shell_complete callback that bypasses typer's
+    autocompletion adapter (which hardcodes a startswith filter).
+
+    Use via `shell_complete=_shell_complete_label` on typer.Argument; the
+    fuzzy candidates we return reach the shell unfiltered.
+    """
+    return [
+        click.shell_completion.CompletionItem(label) for label in _complete_label(incomplete)
+    ]
+
+
+def _shell_complete_label_prefix(
+    _ctx: click.Context, _param: click.Parameter, incomplete: str
+) -> list[click.shell_completion.CompletionItem]:
+    """Strict-prefix completion for --prefix value (matches the option's
+    semantics: 'labels starting with this string')."""
+    needle = incomplete.lower()
+    matches: list[str] = []
+    seen: set[str] = set()
+    for scope in Scope:
+        try:
+            directory = paths.plist_dir(scope)
+            if not directory.is_dir():
+                continue
+            for p in directory.glob("*.plist"):
+                if p.stem in seen:
+                    continue
+                seen.add(p.stem)
+                if p.stem.lower().startswith(needle):
+                    matches.append(p.stem)
+        except OSError:
+            continue
+    return [click.shell_completion.CompletionItem(label) for label in sorted(matches)]
+
+
 LabelArg = Annotated[str, typer.Argument(help="launchd job label (reverse-DNS).")]
 InstalledLabelArg = Annotated[
     str,
     typer.Argument(
-        help="Label of an installed launchd job.", autocompletion=_complete_label
+        help="Label of an installed launchd job.", shell_complete=_shell_complete_label
     ),
 ]
 OptionalInstalledLabelArg = Annotated[
     str | None,
     typer.Argument(
         help="Label of an installed launchd job. Omit if using --prefix/--grep.",
-        autocompletion=_complete_label,
+        shell_complete=_shell_complete_label,
     ),
 ]
 ScopeOpt = Annotated[
@@ -148,7 +187,12 @@ ForceOpt = Annotated[bool, typer.Option("--force", "-f", help="Skip confirmation
 FollowOpt = Annotated[bool, typer.Option("--follow", "-f", help="Tail and follow the log.")]
 ErrOpt = Annotated[bool, typer.Option("--err", help="Tail stderr log instead of stdout.")]
 PrefixOpt = Annotated[
-    str, typer.Option("--prefix", help="Only labels starting with this prefix.")
+    str,
+    typer.Option(
+        "--prefix",
+        help="Only labels starting with this prefix.",
+        shell_complete=_shell_complete_label_prefix,
+    ),
 ]
 
 ProgramOpt = Annotated[
@@ -687,7 +731,7 @@ VerboseOpt = Annotated[
 DoctorLabelArg = Annotated[
     str | None,
     typer.Argument(
-        help="Label to check. Omit to sweep all jobs.", autocompletion=_complete_label
+        help="Label to check. Omit to sweep all jobs.", shell_complete=_shell_complete_label
     ),
 ]
 
@@ -765,7 +809,13 @@ ScheduleOpt = Annotated[
     bool, typer.Option("--schedule", "-s", help="Add a Schedule column summarizing triggers.")
 ]
 GrepOpt = Annotated[
-    str, typer.Option("--grep", "-g", help="Case-insensitive substring match on label.")
+    str,
+    typer.Option(
+        "--grep",
+        "-g",
+        help="Case-insensitive substring match on label.",
+        shell_complete=_shell_complete_label,
+    ),
 ]
 RunningOpt = Annotated[
     bool, typer.Option("--running", help="Only loaded jobs with a live pid.")
